@@ -192,6 +192,7 @@ class Object
         uint32 GetEntry() const { return GetUInt32Value(OBJECT_FIELD_ENTRY); }
         void SetEntry(uint32 entry) { SetUInt32Value(OBJECT_FIELD_ENTRY, entry); }
 
+        float GetObjectScale() const { return GetFloatValue(OBJECT_FIELD_SCALE_X); }
         virtual void SetObjectScale(float scale) { SetFloatValue(OBJECT_FIELD_SCALE_X, scale); }
 
         TypeID GetTypeId() const { return m_objectTypeId; }
@@ -492,7 +493,6 @@ struct MovementInfo
     // swimming/flying
     float pitch;
 
-
     // jumping
     struct JumpInfo
     {
@@ -511,24 +511,12 @@ struct MovementInfo
     // spline
     float splineElevation;
 
-    // bit markers
-    struct MovementElementMarkers
-    {
-        bool hasTransportTime2;
-        bool hasTransportTime3;
-        bool hasPitch;
-        bool hasFallData;
-        bool hasFallDirection;
-        bool hasSplineElevation;
-    } bits;
-
     MovementInfo() :
         guid(0), flags(0), flags2(0), time(0), pitch(0.0f)
     {
         pos.Relocate(0.0f, 0.0f, 0.0f, 0.0f);
         transport.Reset();
         jump.Reset();
-        memset(&bits, 0, sizeof(bits));
     }
 
     uint32 GetMovementFlags() const { return flags; }
@@ -548,15 +536,11 @@ struct MovementInfo
     void ResetTransport()
     {
         transport.Reset();
-        bits.hasTransportTime2 = false;
-        bits.hasTransportTime3 = false;
     }
 
     void ResetJump()
     {
         jump.Reset();
-        bits.hasFallData = false;
-        bits.hasFallDirection = false;
     }
 
     void OutDebug();

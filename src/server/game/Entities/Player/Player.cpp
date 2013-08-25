@@ -25,7 +25,6 @@
 #include "BattlefieldMgr.h"
 #include "BattlefieldWG.h"
 #include "Battleground.h"
-#include "BattlegroundAV.h"
 #include "BattlegroundMgr.h"
 #include "CellImpl.h"
 #include "Channel.h"
@@ -2152,8 +2151,6 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
     // reset movement flags at teleport, because player will continue move with these flags after teleport
     SetUnitMovementFlags(GetUnitMovementFlags() & MOVEMENTFLAG_MASK_HAS_PLAYER_STATUS_OPCODE);
     m_movementInfo.ResetJump();
-    m_movementInfo.bits.hasPitch = false;
-    m_movementInfo.bits.hasSplineElevation = false;
     DisableSpline();
 
     if (m_transport)
@@ -8281,8 +8278,7 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
                 ApplyHealthRegenBonus(int32(val), apply);
                 break;
             case ITEM_MOD_SPELL_PENETRATION:
-                ApplyModInt32Value(PLAYER_FIELD_MOD_TARGET_RESISTANCE, -val, apply);
-                m_spellPenetrationItemMod += apply ? val : -val;
+                ApplySpellPenetrationBonus(val, apply);
                 break;
             case ITEM_MOD_MASTERY_RATING:
                 ApplyRatingMod(CR_MASTERY, int32(val), apply);
@@ -9003,22 +8999,12 @@ void Player::SendLoot(uint64 guid, LootType loot_type)
         if (go->getLootState() == GO_READY)
         {
             uint32 lootid = go->GetGOInfo()->GetLootId();
-
-            /// @todo fix this big hack
-            if ((go->GetEntry() == BG_AV_OBJECTID_MINE_N || go->GetEntry() == BG_AV_OBJECTID_MINE_S))
-            {
-                if (Battleground* bg = GetBattleground())
+            if (Battleground* bg = GetBattleground())
+                if (!bg->CanActivateGO(go->GetEntry(), GetTeam()))
                 {
-                    if (bg->GetTypeID(true) == BATTLEGROUND_AV)
-                    {
-                        if (!bg->ToBattlegroundAV()->PlayerCanDoMineQuest(go->GetEntry(), GetTeam()))
-                        {
-                            SendLootRelease(guid);
-                            return;
-                        }
-                    }
+                    SendLootRelease(guid);
+                    return;
                 }
-            }
 
             if (lootid)
             {
@@ -14212,8 +14198,7 @@ void Player::ApplyEnchantment(Item* item, EnchantmentSlot slot, bool apply, bool
                             TC_LOG_DEBUG(LOG_FILTER_PLAYER_ITEMS, "+ %u HEALTH_REGENERATION", enchant_amount);
                             break;
                         case ITEM_MOD_SPELL_PENETRATION:
-                            ApplyModInt32Value(PLAYER_FIELD_MOD_TARGET_RESISTANCE, enchant_amount, apply);
-                            m_spellPenetrationItemMod += apply ? int32(enchant_amount) : -int32(enchant_amount);
+                            ApplySpellPenetrationBonus(enchant_amount, apply);
                             TC_LOG_DEBUG(LOG_FILTER_PLAYER_ITEMS, "+ %u SPELL_PENETRATION", enchant_amount);
                             break;
                         case ITEM_MOD_BLOCK_VALUE:
@@ -15486,7 +15471,10 @@ bool Player::SatisfyQuestSkill(Quest const* qInfo, bool msg) const
     if (GetSkillValue(skill) < qInfo->GetRequiredSkillValue())
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestSkill: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player does not have required skill value.", qInfo->GetQuestId());
+        }
 
         return false;
     }
@@ -15499,13 +15487,19 @@ bool Player::SatisfyQuestLevel(Quest const* qInfo, bool msg)
     if (getLevel() < qInfo->GetMinLevel())
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_QUEST_FAILED_LOW_LEVEL);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestLevel: Sent INVALIDREASON_QUEST_FAILED_LOW_LEVEL (questId: %u) because player does not have required (min) level.", qInfo->GetQuestId());
+        }
         return false;
     }
     else if (qInfo->GetMaxLevel() > 0 && getLevel() > qInfo->GetMaxLevel())
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ); // There doesn't seem to be a specific response for too high player level
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestLevel: Sent INVALIDREASON_QUEST_FAILED_LOW_LEVEL (questId: %u) because player does not have required (max) level.", qInfo->GetQuestId());
+        }
         return false;
     }
     return true;
@@ -15562,11 +15556,14 @@ bool Player::SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg)
                     if (exclude_Id == prevId)
                         continue;
 
-                    // alternative quest from group also must be completed and rewarded(reported)
+                    // alternative quest from group also must be completed and rewarded (reported)
                     if (m_RewardedQuests.find(exclude_Id) == m_RewardedQuests.end())
                     {
                         if (msg)
+                        {
                             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+                            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestPreviousQuest: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player does not have required quest (1).", qInfo->GetQuestId());
+                        }
                         return false;
                     }
                 }
@@ -15599,7 +15596,11 @@ bool Player::SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg)
                     if (GetQuestStatus(exclude_Id) != QUEST_STATUS_NONE)
                     {
                         if (msg)
+                        {
                             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+                            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestPreviousQuest: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player does not have required quest (2).", qInfo->GetQuestId());
+
+                        }
                         return false;
                     }
                 }
@@ -15611,7 +15612,10 @@ bool Player::SatisfyQuestPreviousQuest(Quest const* qInfo, bool msg)
     // Has only positive prev. quests in non-rewarded state
     // and negative prev. quests in non-active state
     if (msg)
+    {
         SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+        TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestPreviousQuest: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player does not have required quest (3).", qInfo->GetQuestId());
+    }
 
     return false;
 }
@@ -15626,7 +15630,10 @@ bool Player::SatisfyQuestClass(Quest const* qInfo, bool msg) const
     if ((reqClass & getClassMask()) == 0)
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestClass: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player does not have required class.", qInfo->GetQuestId());
+        }
 
         return false;
     }
@@ -15642,7 +15649,11 @@ bool Player::SatisfyQuestRace(Quest const* qInfo, bool msg)
     if ((reqraces & getRaceMask()) == 0)
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_QUEST_FAILED_WRONG_RACE);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestRace: Sent INVALIDREASON_QUEST_FAILED_WRONG_RACE (questId: %u) because player does not have required race.", qInfo->GetQuestId());
+
+        }
         return false;
     }
     return true;
@@ -15654,7 +15665,10 @@ bool Player::SatisfyQuestReputation(Quest const* qInfo, bool msg)
     if (fIdMin && GetReputationMgr().GetReputation(fIdMin) < qInfo->GetRequiredMinRepValue())
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestReputation: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player does not have required reputation (min).", qInfo->GetQuestId());
+        }
         return false;
     }
 
@@ -15662,7 +15676,10 @@ bool Player::SatisfyQuestReputation(Quest const* qInfo, bool msg)
     if (fIdMax && GetReputationMgr().GetReputation(fIdMax) >= qInfo->GetRequiredMaxRepValue())
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestReputation: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player does not have required reputation (max).", qInfo->GetQuestId());
+        }
         return false;
     }
 
@@ -15672,7 +15689,10 @@ bool Player::SatisfyQuestReputation(Quest const* qInfo, bool msg)
     if (fIdObj && GetReputationMgr().GetReputation(fIdObj) >= qInfo->GetRepObjectiveValue2())
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestReputation: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player does not have required reputation (ReputationObjective2).", qInfo->GetQuestId());
+        }
         return false;
     }
 
@@ -15684,7 +15704,10 @@ bool Player::SatisfyQuestStatus(Quest const* qInfo, bool msg)
     if (GetQuestStatus(qInfo->GetQuestId()) != QUEST_STATUS_NONE)
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_QUEST_ALREADY_ON);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestStatus: Sent INVALIDREASON_QUEST_ALREADY_ON (questId: %u) because player quest status is not NONE.", qInfo->GetQuestId());
+        }
         return false;
     }
     return true;
@@ -15696,7 +15719,10 @@ bool Player::SatisfyQuestConditions(Quest const* qInfo, bool msg)
     if (!sConditionMgr->IsObjectMeetToConditions(this, conditions))
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestConditions: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player does not meet conditions.", qInfo->GetQuestId());
+        }
         TC_LOG_DEBUG(LOG_FILTER_CONDITIONSYS, "Player::SatisfyQuestConditions: conditions not met for quest %u", qInfo->GetQuestId());
         return false;
     }
@@ -15708,7 +15734,10 @@ bool Player::SatisfyQuestTimed(Quest const* qInfo, bool msg)
     if (!m_timedquests.empty() && qInfo->HasSpecialFlag(QUEST_SPECIAL_FLAGS_TIMED))
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_QUEST_ONLY_ONE_TIMED);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestTimed: Sent INVALIDREASON_QUEST_ONLY_ONE_TIMED (questId: %u) because player is already on a timed quest.", qInfo->GetQuestId());
+        }
         return false;
     }
     return true;
@@ -15738,7 +15767,10 @@ bool Player::SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg)
         if (!SatisfyQuestDay(Nquest, false) || !SatisfyQuestWeek(Nquest, false) || !SatisfyQuestSeasonal(Nquest, false))
         {
             if (msg)
+            {
                 SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+                TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestExclusiveGroup: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player already did daily quests in exclusive group.", qInfo->GetQuestId());
+            }
 
             return false;
         }
@@ -15747,7 +15779,10 @@ bool Player::SatisfyQuestExclusiveGroup(Quest const* qInfo, bool msg)
         if (GetQuestStatus(exclude_Id) != QUEST_STATUS_NONE || (!(qInfo->IsRepeatable() && Nquest->IsRepeatable()) && (m_RewardedQuests.find(exclude_Id) != m_RewardedQuests.end())))
         {
             if (msg)
+            {
                 SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+                TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestExclusiveGroup: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player already did quest in exclusive group.", qInfo->GetQuestId());
+            }
             return false;
         }
     }
@@ -15764,7 +15799,10 @@ bool Player::SatisfyQuestNextChain(Quest const* qInfo, bool msg)
     if (GetQuestStatus(nextQuest) != QUEST_STATUS_NONE) // GetQuestStatus returns QUEST_STATUS_COMPLETED for rewarded quests
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestNextChain: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player already did or started next quest in chain.", qInfo->GetQuestId());
+        }
         return false;
     }
 
@@ -15788,7 +15826,10 @@ bool Player::SatisfyQuestPrevChain(Quest const* qInfo, bool msg)
         if (itr != m_QuestStatus.end() && itr->second.Status != QUEST_STATUS_NONE)
         {
             if (msg)
+            {
                 SendCanTakeQuestResponse(INVALIDREASON_DONT_HAVE_REQ);
+                TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestNextChain: Sent INVALIDREASON_DONT_HAVE_REQ (questId: %u) because player already did or started next quest in chain.", qInfo->GetQuestId());
+            }
             return false;
         }
 
@@ -15829,7 +15870,10 @@ bool Player::SatisfyQuestDay(Quest const* qInfo, bool msg)
     if (!have_slot)
     {
         if (msg)
+        {
             SendCanTakeQuestResponse(INVALIDREASON_DAILY_QUESTS_REMAINING);
+            TC_LOG_DEBUG(LOG_FILTER_GENERAL, "SatisfyQuestDay: Sent INVALIDREASON_DAILY_QUESTS_REMAINING (questId: %u) because player already did all possible quests today.", qInfo->GetQuestId());
+        }
         return false;
     }
 
@@ -16748,7 +16792,7 @@ void Player::SendQuestTimerFailed(uint32 quest_id)
     }
 }
 
-void Player::SendCanTakeQuestResponse(uint32 msg) const
+void Player::SendCanTakeQuestResponse(QuestFailedReason msg) const
 {
     WorldPacket data(SMSG_QUESTGIVER_QUEST_INVALID, 4);
     data << uint32(msg);
@@ -27100,7 +27144,7 @@ float Player::GetCollisionHeight(bool mounted) const
         CreatureModelDataEntry const* modelData = sCreatureModelDataStore.LookupEntry(displayInfo->ModelId);
         ASSERT(modelData);
 
-        float scaleMod = GetFloatValue(OBJECT_FIELD_SCALE_X); // 99% sure about this
+        float scaleMod = GetObjectScale(); // 99% sure about this
 
         return scaleMod * mountModelData->MountHeight + modelData->CollisionHeight * 0.5f;
     }
@@ -27279,6 +27323,12 @@ void Player::ReadMovementInfo(WorldPacket& data, MovementInfo* mi, Movement::Ext
     bool hasTimestamp = false;
     bool hasOrientation = false;
     bool hasTransportData = false;
+    bool hasTransportTime2 = false;
+    bool hasTransportTime3 = false;
+    bool hasPitch = false;
+    bool hasFallData = false;
+    bool hasFallDirection = false;
+    bool hasSplineElevation = false;
 
     ObjectGuid guid;
     ObjectGuid tguid;
@@ -27348,24 +27398,24 @@ void Player::ReadMovementInfo(WorldPacket& data, MovementInfo* mi, Movement::Ext
                 break;
             case MSEHasTransportTime2:
                 if (hasTransportData)
-                    mi->bits.hasTransportTime2 = data.ReadBit();
+                    hasTransportTime2 = data.ReadBit();
                 break;
             case MSEHasTransportTime3:
                 if (hasTransportData)
-                    mi->bits.hasTransportTime3 = data.ReadBit();
+                    hasTransportTime3 = data.ReadBit();
                 break;
             case MSEHasPitch:
-                mi->bits.hasPitch = !data.ReadBit();
+                hasPitch = !data.ReadBit();
                 break;
             case MSEHasFallData:
-                mi->bits.hasFallData = data.ReadBit();
+                hasFallData = data.ReadBit();
                 break;
             case MSEHasFallDirection:
-                if (mi->bits.hasFallData)
-                    mi->bits.hasFallDirection = data.ReadBit();
+                if (hasFallData)
+                    hasFallDirection = data.ReadBit();
                 break;
             case MSEHasSplineElevation:
-                mi->bits.hasSplineElevation = !data.ReadBit();
+                hasSplineElevation = !data.ReadBit();
                 break;
             case MSEHasSpline:
                 data.ReadBit();
@@ -27420,39 +27470,39 @@ void Player::ReadMovementInfo(WorldPacket& data, MovementInfo* mi, Movement::Ext
                     data >> mi->transport.time;
                 break;
             case MSETransportTime2:
-                if (hasTransportData && mi->bits.hasTransportTime2)
+                if (hasTransportData && hasTransportTime2)
                     data >> mi->transport.time2;
                 break;
             case MSETransportTime3:
-                if (hasTransportData && mi->bits.hasTransportTime3)
+                if (hasTransportData && hasTransportTime3)
                     data >> mi->transport.time3;
                 break;
             case MSEPitch:
-                if (mi->bits.hasPitch)
-                    data >> mi->pitch;
+                if (hasPitch)
+                    mi->pitch = G3D::wrap(data.read<float>(), float(-M_PI), float(M_PI));
                 break;
             case MSEFallTime:
-                if (mi->bits.hasFallData)
+                if (hasFallData)
                     data >> mi->jump.fallTime;
                 break;
             case MSEFallVerticalSpeed:
-                if (mi->bits.hasFallData)
+                if (hasFallData)
                     data >> mi->jump.zspeed;
                 break;
             case MSEFallCosAngle:
-                if (mi->bits.hasFallData && mi->bits.hasFallDirection)
+                if (hasFallData && hasFallDirection)
                     data >> mi->jump.cosAngle;
                 break;
             case MSEFallSinAngle:
-                if (mi->bits.hasFallData && mi->bits.hasFallDirection)
+                if (hasFallData && hasFallDirection)
                     data >> mi->jump.sinAngle;
                 break;
             case MSEFallHorizontalSpeed:
-                if (mi->bits.hasFallData && mi->bits.hasFallDirection)
+                if (hasFallData && hasFallDirection)
                     data >> mi->jump.xyspeed;
                 break;
             case MSESplineElevation:
-                if (mi->bits.hasSplineElevation)
+                if (hasSplineElevation)
                     data >> mi->splineElevation;
                 break;
             case MSECounter:
@@ -27549,6 +27599,15 @@ void Player::ReadMovementInfo(WorldPacket& data, MovementInfo* mi, Movement::Ext
 
     REMOVE_VIOLATING_FLAGS(mi->HasMovementFlag(MOVEMENTFLAG_DISABLE_GRAVITY | MOVEMENTFLAG_CAN_FLY) && mi->HasMovementFlag(MOVEMENTFLAG_FALLING),
         MOVEMENTFLAG_FALLING);
+
+    REMOVE_VIOLATING_FLAGS(mi->HasMovementFlag(MOVEMENTFLAG_FALLING) && (!hasFallData || !hasFallDirection), MOVEMENTFLAG_FALLING);
+
+    REMOVE_VIOLATING_FLAGS(mi->HasMovementFlag(MOVEMENTFLAG_SPLINE_ELEVATION) &&
+        (!hasSplineElevation || G3D::fuzzyEq(mi->splineElevation, 0.0f)), MOVEMENTFLAG_SPLINE_ELEVATION);
+
+    // Client first checks if spline elevation != 0, then verifies flag presence
+    if (hasSplineElevation)
+        mi->AddMovementFlag(MOVEMENTFLAG_SPLINE_ELEVATION);
 
     #undef REMOVE_VIOLATING_FLAGS
 }
